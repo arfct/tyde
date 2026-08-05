@@ -53,7 +53,14 @@ hanken_medium_font = ImageFont.truetype(HankenGroteskMedium, int(16 * scale_size
 # Get configuration values
 nickname = config.get('nickname', 'Marine')
 tide_station = config.get('tide_station')
-tz_offset = int(config.get('tz', '0'))
+def parse_timezone(tz_config):
+    """Accept an IANA name ("America/Los_Angeles", DST-aware) or a fixed hour offset ("-8")."""
+    try:
+        return timezone(timedelta(hours=int(tz_config)))
+    except ValueError:
+        return ZoneInfo(tz_config)
+
+local_tz = parse_timezone(config.get('tz', '0'))
 layout = config.get('layout', 'landscape')
 timeFormat = config.get('time', '24')
 
@@ -80,7 +87,7 @@ def time_in_tz(unix_timestamp, tz_offset, timeFormat="24"):
     dt = datetime.fromtimestamp(unix_timestamp, tz=tz)
     
     if timeFormat == "12":
-        formatted_time = dt.strftime("%-I:%M%p").lower()
+        formatted_time = dt.strftime("%-I:%M")
     else:
         formatted_time = dt.strftime("%H:%M")
     
@@ -98,7 +105,9 @@ def calculate_sun_times(date, latitude, longitude):
     )
     
     # Get sun times for the date
-    s = sun(loc.observer, date=date, dawn_dusk_depression=18)  # 18 degrees for astronomical twilight
+    # Civil twilight (6 degrees): astronomical (18) never ends near the
+    # solstice above ~48N, which pushes dusk past midnight and breaks layout
+    s = sun(loc.observer, date=date, dawn_dusk_depression=6)
     
     # Calculate golden hours (1 hour before sunset and after sunrise)
     golden_start = s['sunrise'].timestamp()  # Morning golden hour starts at sunrise
@@ -118,61 +127,85 @@ def calculate_sun_times(date, latitude, longitude):
     }
 
 def draw_moon(draw, x, y, radius, phase, color):
-    """Draw moon phase at given position with specified radius."""
-    # Create a mask image for clipping
-    mask = Image.new('L', (radius * 2 + 1, radius * 2 + 1), 0)
-    mask_draw = ImageDraw.Draw(mask)
-    mask_draw.ellipse([0, 0, radius * 2, radius * 2], fill=255)
-    
-    # Create a temporary image for the moon phase
-    temp = Image.new('P', (radius * 2 + 1, radius * 2 + 1), inky_display.WHITE)
+    """Draw moon phase at given position with specified radius.
+
+    phase: 0 = new, 0.25 = first quarter, 0.5 = full, 0.75 = last quarter.
+    Northern-hemisphere orientation: waxing lit on the right, waning on the left.
+    """
+    size = radius * 2 + 1
+    mask = Image.new('L', (size, size), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, radius * 2, radius * 2], fill=255)
+
+    temp = Image.new('P', (size, size), inky_display.BLACK)
     temp_draw = ImageDraw.Draw(temp)
-    
-    # Draw the basic circle
-    temp_draw.ellipse([0, 0, radius * 2, radius * 2], outline=inky_display.BLACK, fill=inky_display.WHITE)
-    
-    # Calculate the terminator curve
-    phase_angle = phase * 2 * pi
-    
-    # Create points for the terminator
-    points = []
-    for i in range(-radius, radius + 1):
-        y_offset = i
-        
-        # Calculate width of the moon at this y position
-        width = sqrt(radius**2 - y_offset**2)
-        
-        if 0 <= phase < 0.5:  # Waxing
-            x_offset = -width * cos(phase_angle)
-            points.append((radius + x_offset, radius + y_offset))
-            points.append((0, radius + y_offset))
-        elif 0.5 <= phase <= 1:  # Waning
-            x_offset = width * cos(phase_angle)
-            points.append((radius + x_offset, radius + y_offset))
-            points.append((radius * 2, radius + y_offset))
-    
-    # Sort points by y-coordinate to ensure proper polygon drawing
-    points.sort(key=lambda p: p[1])
-    
-    # Fill the dark part of the moon
-    if points:
-        temp_draw.polygon(points, fill=inky_display.BLACK)
-    
-    # Paste the moon onto the main image using the mask
+
+    bounds = [0, 0, radius * 2, radius * 2]
+    waxing = phase < 0.5
+    illuminated_fraction = (1 - cos(phase * 2 * pi)) / 2
+
+    lit_half_angles = (-90, 90) if waxing else (90, 270)
+    temp_draw.pieslice(bounds, *lit_half_angles, fill=inky_display.WHITE)
+
+    # The terminator is a half-ellipse: dark for crescents, lit for gibbous
+    terminator_half_width = abs(cos(phase * 2 * pi)) * radius
+    terminator_fill = inky_display.BLACK if illuminated_fraction < 0.5 else inky_display.WHITE
+    temp_draw.ellipse(
+        [radius - terminator_half_width, 0, radius + terminator_half_width, radius * 2],
+        fill=terminator_fill)
+
+    temp_draw.ellipse(bounds, outline=inky_display.BLACK)
     img.paste(temp, (x - radius, y - radius), mask=mask)
+
+def interpolate_hilo_predictions(extremes, start_ts, end_ts, step_seconds=900):
+    """Synthesize an evenly-spaced prediction series from high/low extremes.
+
+    Uses the standard cosine (rule-of-twelfths) approximation between
+    consecutive extremes, which is how tide clocks model the curve when a
+    subordinate station only publishes highs and lows.
+    """
+    points = sorted((parse_time_str(p["t"], 0), float(p["v"])) for p in extremes)
+    series = []
+    ts = start_ts
+    while ts < end_ts:
+        if ts <= points[0][0]:
+            value = points[0][1]
+        elif ts >= points[-1][0]:
+            value = points[-1][1]
+        else:
+            for (t1, v1), (t2, v2) in zip(points, points[1:]):
+                if t1 <= ts <= t2:
+                    value = (v1 + v2) / 2 + (v1 - v2) / 2 * cos(pi * (ts - t1) / (t2 - t1))
+                    break
+        time_str = datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d %H:%M')
+        series.append({"t": time_str, "v": f"{value:.3f}"})
+        ts += step_seconds
+    return {"predictions": series}
 
 # Fetch tide data - modified to start at local midnight
 current_dt = datetime.now(timezone.utc)
-local_tz = timezone(timedelta(hours=tz_offset))
 local_dt = current_dt.astimezone(local_tz)
 local_midnight = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 utc_midnight = local_midnight.astimezone(timezone.utc)
 begin_date = utc_midnight.strftime("%Y%m%d%%2000:00")
-tide_url = f"https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?begin_date={begin_date}&range=48&station={tide_station}&product=predictions&datum=MLLW&time_zone=gmt&units=english&format=json&interval=15"
+tide_url_base = f"https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?station={tide_station}&product=predictions&datum=MLLW&time_zone=gmt&units=english&format=json"
+tide_url = f"{tide_url_base}&begin_date={begin_date}&range=48&interval=15"
+
+def fetch_json(url):
+    with request.urlopen(url) as response:
+        return json.loads(response.read())
 
 try:
-    with request.urlopen(tide_url) as response:
-        tide_data = json.loads(response.read())
+    tide_data = fetch_json(tide_url)
+    if "predictions" not in tide_data:
+        # Subordinate stations only publish high/low extremes; fetch those
+        # (padded a day on each side) and interpolate the 15-minute curve.
+        hilo_begin = (utc_midnight - timedelta(days=1)).strftime("%Y%m%d%%2000:00")
+        hilo_url = f"{tide_url_base}&begin_date={hilo_begin}&range=96&interval=hilo"
+        hilo_data = fetch_json(hilo_url)
+        tide_data = interpolate_hilo_predictions(
+            hilo_data["predictions"],
+            utc_midnight.timestamp(),
+            (utc_midnight + timedelta(days=2)).timestamp())
 except Exception as e:
     print(f"Error fetching tide data: {e}")
     tide_data = None
@@ -211,14 +244,18 @@ if tide_data and "predictions" in tide_data:
         sun_times = calculate_sun_times(local_midnight, latitude, longitude)
         
         # Calculate progress through the day for each sun event
-        dawn_progress = (datetime.fromtimestamp(sun_times['dawn'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        sunrise_progress = (datetime.fromtimestamp(sun_times['sunrise'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        golden_start_progress = (datetime.fromtimestamp(sun_times['golden_start'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        golden_end_progress = (datetime.fromtimestamp(sun_times['golden_end'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        evening_golden_start_progress = (datetime.fromtimestamp(sun_times['evening_golden_start'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        evening_golden_end_progress = (datetime.fromtimestamp(sun_times['evening_golden_end'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        sunset_progress = (datetime.fromtimestamp(sun_times['sunset'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
-        dusk_progress = (datetime.fromtimestamp(sun_times['dusk'], local_tz) - local_midnight).total_seconds() / (24 * 3600)
+        def day_progress(ts):
+            fraction = (datetime.fromtimestamp(ts, local_tz) - local_midnight).total_seconds() / (24 * 3600)
+            return min(max(fraction, 0.0), 1.0)
+
+        dawn_progress = day_progress(sun_times['dawn'])
+        sunrise_progress = day_progress(sun_times['sunrise'])
+        golden_start_progress = day_progress(sun_times['golden_start'])
+        golden_end_progress = day_progress(sun_times['golden_end'])
+        evening_golden_start_progress = day_progress(sun_times['evening_golden_start'])
+        evening_golden_end_progress = day_progress(sun_times['evening_golden_end'])
+        sunset_progress = day_progress(sun_times['sunset'])
+        dusk_progress = day_progress(sun_times['dusk'])
         
         # Calculate x-coordinates for sun events
         x_dawn = int(graph_x + (dawn_progress * graph_width))
@@ -245,6 +282,17 @@ if tide_data and "predictions" in tide_data:
 
         # Regular daylight (white)
         draw.rectangle([x_golden_end, y_top, x_evening_golden_start, y_bottom], fill=inky_display.WHITE)
+
+        # Sunrise/sunset times in the night regions
+        def format_time(ts):
+            local_time = datetime.fromtimestamp(ts, local_tz)
+            return local_time.strftime("%-I:%M") if timeFormat == "12" else local_time.strftime("%H:%M")
+
+        sun_label_y = y_top + 16
+        draw.text((x_golden_end + 8, sun_label_y), format_time(sun_times['sunrise']),
+                  fill=inky_display.BLUE, font=hanken_bold_font, anchor="lm")
+        draw.text((x_evening_golden_start - 8, sun_label_y), format_time(sun_times['sunset']),
+                  fill=inky_display.BLUE, font=hanken_bold_font, anchor="rm")
 
         # Draw hour lines and labels
         graph_bottom = graph_y + graph_height  # Bottom of the graph
@@ -300,7 +348,7 @@ if tide_data and "predictions" in tide_data:
                     
                     # Only draw labels during daylight hours (between dawn and dusk)
                     if dawn_progress <= progress <= dusk_progress:
-                        time_str = local_time.strftime("%-I:%M%p").lower() if timeFormat == "12" else local_time.strftime("%H:%M")
+                        time_str = local_time.strftime("%-I:%M") if timeFormat == "12" else local_time.strftime("%H:%M")
                         text_color = inky_display.BLACK
                         
                         draw.text((x, y - 15), f"{value:.1f}'", 
