@@ -4,7 +4,6 @@ date: 2025-02
 category: product
 tags:
   - hardware
-  - open-source
 links:
   source: https://github.com/arfct/tyde
 media: []
