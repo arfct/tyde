@@ -8,12 +8,14 @@ links:
   source: https://github.com/arfct/tyde
 media:
   - src: tyde-display.png
-    caption: One day at San Francisco's Golden Gate station, drawn for a 600×448 Inky panel, with a bar for every quarter hour, night in blue and golden hour in yellow
+    caption: One day of tides, with a high of 6.2 feet at 10:30, night in blue and the golden hours in yellow
     alt: A seven-colour e-ink frame on white. A dark blue night block at each side holds white tide bars and hour numbers, with orange twilight and yellow golden-hour strips either side of a white daylight middle, where black bars rise to a labelled high of 6.2 feet at 10:30. A dark disc for the new moon sits at upper left, and sunrise and sunset times sit along the top
 unconfirmed:
   - date
 ---
 
-Tyde is a tide meter on an e-ink panel. A Python script pulls two days of NOAA predictions for a chosen station and draws the day's tide as a bar for every quarter hour, labelling the high and low water that fall in daylight. Beside the tide it draws the day's sunrise, sunset and golden hours, and a moon whose terminator curve is computed for the current phase.
+Tyde is a tide display for an e-ink panel. A Python script fetches two days of NOAA tide predictions for one station and draws the current day as a bar for every 15 minutes. It labels each high and low that falls between dawn and dusk with its time and its height in feet. Behind the bars, vertical bands mark night in blue, civil twilight in orange, the hour after sunrise and the hour before sunset in yellow, and daylight in white. The sunrise and sunset times are printed at the top, and the moon is drawn at its current phase in the upper left.
 
-Python on a Pimoroni Inky display, NOAA predictions at 15-minute intervals. 2025.
+For a station that publishes only highs and lows, the script interpolates the 15-minute values along a cosine curve. The station, the coordinates and the time zone are set in a config file.
+
+Python, Pillow, Astral, Pimoroni Inky. 2025.
