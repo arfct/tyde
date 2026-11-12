@@ -9,7 +9,7 @@ links:
 media:
   - src: tyde-display.png
     caption: A day with two labelled tides, a high of 6.2 feet at 10:30 and a low of −0.5 feet at 5:30 in the evening twilight
-    alt: A seven-colour e-ink frame on white. A dark blue night block at each side holds white tide bars and hour numbers, with orange twilight and yellow golden-hour strips either side of a white daylight middle, where black bars rise to a labelled high of 6.2 feet at 10:30. A dark disc for the new moon sits at upper left, and sunrise and sunset times sit along the top
+    alt: A render of the picture the script sends to a seven-color e-ink panel, on a white ground. A dark blue night block at each side holds white tide bars and hour numbers, with orange twilight and yellow golden-hour strips either side of a white daylight middle, where black bars rise to a labelled high of 6.2 feet at 10:30. A dark disc for the new moon sits at upper left, and sunrise and sunset times sit along the top
 unconfirmed:
   - date
 ---
