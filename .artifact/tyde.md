@@ -2,7 +2,7 @@
 title: Tyde
 date: 2025-02
 status: wip
-category: product
+category: device
 tags:
   - hardware
 links:
